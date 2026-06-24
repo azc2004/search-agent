@@ -730,8 +730,17 @@ def main():
                             unsafe_allow_html=True)
             c0, c1 = st.columns([1, 7])
             with c0:
+                prd_url = "https://www.halfclub.com/product/" + str(p["prdNo"])
+                image_url = p["imageUrl"]
+                html_code = ""
                 if p["imageUrl"]:
-                    st.image(p["imageUrl"], width='stretch')
+                    # st.image(p["imageUrl"], width='stretch')
+                    html_code = f"""
+                    <a href="{prd_url}" target="_blank">
+                        <img src="{image_url}" style="width: 100%;">
+                    </a>
+                    """
+                st.markdown(html_code, unsafe_allow_html=True)
             with c1:
                 st.markdown(f"**{p['prdNm']}**")
                 st.markdown(price, unsafe_allow_html=True)
