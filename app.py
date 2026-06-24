@@ -482,13 +482,13 @@ def main():
                                     label_visibility="collapsed", placeholder="상품·트렌드를 검색하세요")
         with sbar[1]:
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
-        co1, co2 = st.columns(2)
-        with co1:
-            use_trends = st.checkbox("외부 패션 트렌드 수집 (Daum·Google 뉴스)", value=True)
-        with co2:
-            use_exa = st.checkbox("Exa AI 트렌드 수집 (Vogue 등 매체 본문)", value=False)
+        trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
+                             horizontal=True, index=1)
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
+    use_trends = trend_src == "Daum·Google 뉴스"
+    use_exa = trend_src == "Exa AI (매체 본문)"
+    use_litellm = llm_mode == "LiteLLM 프록시"
     use_litellm = llm_mode == "LiteLLM 프록시"
     if not submitted or not keyword:
         st.caption("검색어 입력 후 엔터 또는 검색 버튼을 누르세요.")
