@@ -15,25 +15,28 @@ from zilliz import get_desc_map
 
 def _popular_buttons():
     """검색창 하단 실시간 인기검색어 버튼 — 키워드 길이 비례 가로 나열(문자합 기준 줄바꿈).
-    클릭 시 _pending_kw 적재 → main 최상단에서 위젯 렌더 전 kw_input 으로 소개.
-    disabled는 생략 — Streamlit 스피너가 검색 런 중 인터랙션을 자동 차단함."""
+    컴팩트 pill 스타일(padding/font 축소, gap 좁힘)."""
     pops = get_popular_keywords()
     if not pops:
         st.caption("인기검색어를 불러오지 못했습니다. 검색어를 직접 입력해 주세요.")
         return
     st.markdown(
+        '<style>'
+        '[data-testid="stButton"] button{padding:4px 8px!important;font-size:13px!important;'
+        'line-height:1.2!important;border-radius:14px!important}'
+        '</style>'
         '<div style="font-weight:700;font-size:13px;color:#666;margin:8px 0 4px">'
         '실시간 인기검색어 (클릭 시 검색)</div>', unsafe_allow_html=True)
     rows, cur, cur_len = [], [], 0
-    for p in pops:                                  # 문자합 ~30 기준 행 분할
+    for p in pops:                                  # 문자합 ~40 기준 행 분할(행당 8~10개)
         n = len(p["keyword"])
-        if cur and cur_len + n > 30:
+        if cur and cur_len + n > 40:
             rows.append(cur); cur, cur_len = [], 0
         cur.append(p); cur_len += n
     if cur:
         rows.append(cur)
     for ri, row in enumerate(rows):
-        cols = st.columns([len(p["keyword"]) for p in row])   # 행 내 키워드 길이 비례 폭
+        cols = st.columns([len(p["keyword"]) for p in row], gap="small")  # 비례 폭 + 좁은 갭
         for ci, p in enumerate(row):
             with cols[ci]:
                 if st.button(p["keyword"], key=f"pop_{ri}_{ci}", use_container_width=True):
