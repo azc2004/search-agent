@@ -1,4 +1,3 @@
-import os
 import html
 import json
 import re
@@ -7,17 +6,9 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import requests
 import streamlit as st
-from pathlib import Path
 from datetime import date, timedelta
-from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
-
-# LITELLM_BASE_URL = os.environ["LITELLM_BASE_URL"]
-# LITELLM_API_KEY = os.environ["LITELLM_API_KEY"]
-# GUIDE_MODEL = os.environ.get("GUIDE_MODEL", "gpt-4o-mini")
-# DIRECT_BASE_URL = os.environ.get("LLM_DIRECT_BASE_URL", "https://api.openai.com/v1")
-# DIRECT_API_KEY = os.environ.get("LLM_DIRECT_API_KEY", "")
+# 모든 secret은 .streamlit/secrets.toml(st.secrets)에서 로드
 LITELLM_BASE_URL = st.secrets["LITELLM_BASE_URL"]
 LITELLM_API_KEY = st.secrets["LITELLM_API_KEY"]
 GUIDE_MODEL = st.secrets["GUIDE_MODEL"]
@@ -170,41 +161,64 @@ def _gnews_titles(keyword: str) -> list:
         return []
 
 
-@st.cache_data(ttl=3600)
-def get_exa_articles(keyword: str) -> list:
-    """Exa AI로 최신 패션 매체 기사(본문) 수집. [{title,source,body,link}]. 실패/키 미설정 시 []."""
-    key = os.environ.get("EXA_API_KEY")
+FASHION_MEDIA = ["vogue.co.kr", "elle.co.kr", "wkorea.com", "bazaar.kr",
+                 "cosmopolitan.co.kr", "marieclaire.co.kr", "fashionbiz.net"]
+
+
+def _parse_exa(results: list) -> list:
+    out = []
+    for it in results:
+        title = (it.get("title") or "").strip()
+        source = "패션매체"
+        if "|" in title:                                   # "제목 | 매체명" → 매체명
+            source = title.rsplit("|", 1)[1].split("(")[0].strip() or source
+            title = title.rsplit("|", 1)[0].strip()
+        elif it.get("url"):
+            source = urllib.parse.urlparse(it["url"]).netloc.replace("www.", "")
+        txt = it.get("text") or ""
+        if "공유" in txt:                                # "- 복사\n- 공유" 배너 이후 본문
+            txt = txt.split("공유", 1)[1]
+        txt = re.sub(r"^\s*\* 본 기사[^.]*\.\s*", "", txt)  # 에디터 면책문구 제거
+        txt = re.sub(r"\s+", " ", txt.replace("#", " ")).strip()
+        if len(txt) < 25:
+            continue
+        out.append({"title": title[:50], "source": source, "body": txt[:300],
+                    "link": it.get("url", "")})
+    return out
+
+
+@st.cache_data(ttl=1800)
+def get_exa_articles(keyword: str, use_livecrawl: bool = False) -> list:
+    """Exa AI로 최신 패션 기사 수집. 패션매체(필수) + 전체(보강) 병합. [{title,source,body,link}]."""
+    key = st.secrets.get("EXA_API_KEY")
     if not key:
         return []
-    try:
-        r = requests.post(
-            "https://api.exa.ai/search",
-            headers={"x-api-key": key, "content-type": "application/json"},
-            json={"query": f"{keyword} 패션 트렌드", "numResults": 5, "type": "auto",
-                  "startPublishedDate": "2025-01-01",
-                  "contents": {"text": {"maxCharacters": 600}}},
-            timeout=25)
-        out = []
-        for it in r.json().get("results", []):
-            title = (it.get("title") or "").strip()
-            source = "패션매체"
-            if "|" in title:                                   # "제목 | 매체명" → 매체명
-                source = title.rsplit("|", 1)[1].split("(")[0].strip() or source
-                title = title.rsplit("|", 1)[0].strip()
-            elif it.get("url"):
-                source = urllib.parse.urlparse(it["url"]).netloc.replace("www.", "")
-            txt = it.get("text") or ""
-            if "공유" in txt:                                # "- 복사\n- 공유" 배너 이후 본문
-                txt = txt.split("공유", 1)[1]
-            txt = re.sub(r"^\s*\* 본 기사[^.]*\.\s*", "", txt)  # 에디터 면책문구 제거
-            txt = re.sub(r"\s+", " ", txt.replace("#", " ")).strip()
-            if len(txt) < 25:
-                continue
-            out.append({"title": title[:50], "source": source, "body": txt[:300],
-                        "link": it.get("url", "")})
-        return out
-    except Exception:
-        return []
+    start = (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")   # 최신 30일 윈도우
+    base = {"query": f"{keyword} 패션 트렌드", "numResults": 5, "type": "auto",
+            "startPublishedDate": start, "contents": {"text": {"maxCharacters": 600}}}
+    if use_livecrawl:                              # 실시간 크롤(최신 본문, 지연↑)
+        base["livecrawl"] = "always"
+    timeout = 40 if use_livecrawl else 25
+
+    def _search(extra):                            # Exa 1회 호출 + 파싱
+        try:
+            r = requests.post(
+                "https://api.exa.ai/search",
+                headers={"x-api-key": key, "content-type": "application/json"},
+                json={**base, **extra}, timeout=timeout)
+            return _parse_exa(r.json().get("results", []))
+        except Exception:
+            return []
+
+    media = _search({"includeDomains": FASHION_MEDIA})    # 패션매체 필수
+    general = _search({})                                  # 전 도메인 보강
+    seen, out = set(), []
+    for i in range(max(len(media), len(general))):        # 교차 병합(타 매체도 노출 보장)
+        for src in (media, general):
+            if i < len(src) and src[i]["link"] and src[i]["link"] not in seen:
+                seen.add(src[i]["link"])
+                out.append(src[i])
+    return out[:8]
 
 
 def build_trend_context(signals: dict, keyword: str, naver: list, musinsa: list,
@@ -314,16 +328,21 @@ def curate_products(keyword: str, guide: str, cand_key: tuple, use_litellm: bool
 
 
 def _ctgr_candidates(agg):
-    """ctgr aggregation 평탄화 → (이름, 코드, depth, doc_count). key 포맷: rn@code@name."""
+    """ctgr aggregation 평탄화 → (이름, 코드, depth, doc_count, 경로문자열). key 포맷: rn@code@name."""
     out = []
     for b1 in agg.get("ctgr", {}).get("ctgr1", {}).get("buckets", []):
         p = b1["key"].split("@")
-        out.append((p[2] if len(p) > 2 else "", p[1] if len(p) > 1 else "", 1, b1.get("doc_count", 0)))
+        n1 = p[2] if len(p) > 2 else ""
+        c1 = p[1] if len(p) > 1 else ""
+        out.append((n1, c1, 1, b1.get("doc_count", 0), n1))
         for b2 in b1.get("ctgr2", {}).get("buckets", []):
             p2 = b2["key"].split("@")
-            out.append((p2[2] if len(p2) > 2 else "", p2[1] if len(p2) > 1 else "", 2, b2.get("doc_count", 0)))
+            n2 = p2[2] if len(p2) > 2 else ""
+            c2 = p2[1] if len(p2) > 1 else ""
+            out.append((n2, c2, 2, b2.get("doc_count", 0), f"{n1} {n2}"))
             for b3 in b2.get("ctgr3", {}).get("buckets", []):
-                out.append((b3.get("ctgrNm3", ""), b3.get("ctgrNo3", ""), 3, b3.get("doc_count", 0)))
+                n3 = b3.get("ctgrNm3", "")
+                out.append((n3, b3.get("ctgrNo3", ""), 3, b3.get("doc_count", 0), f"{n1} {n2} {n3}"))
     return out
 
 
@@ -350,23 +369,42 @@ def _demo_gender(s: str):
     return None
 
 
+_CAT_CONCEPTS = [
+    ("골프", "골프"), ("스포츠", "스포츠"), ("트레이닝", "스포츠"), ("수영", "수영"),
+    ("웨어", "의류"), ("의류", "의류"), ("아우터", "아우터"),
+    ("티셔츠", "티셔츠"), ("반팔", "티셔츠"), ("긴팔", "티셔츠"), ("맨투맨", "티셔츠"),
+    ("후드", "티셔츠"), ("셔츠", "셔츠"), ("블라우스", "블라우스"),
+    ("팬츠", "팬츠"), ("바지", "팬츠"), ("원피스", "원피스"), ("스커트", "스커트"),
+    ("니트", "니트"), ("자켓", "자켓"), ("점퍼", "점퍼"), ("가디건", "가디건"), ("베스트", "베스트"),
+    ("신발", "신발"), ("슈즈", "신발"), ("샌들", "신발"),
+    ("잡화", "잡화"), ("용품", "잡화"), ("모자", "모자"), ("장갑", "장갑"), ("벨트", "벨트"),
+]
+
+
+def _cat_concepts(s: str) -> set:
+    return {c for pat, c in _CAT_CONCEPTS if pat in s}
+
+
 def _match_category(target: str, keyword: str, gender: str, cands):
-    """카테고리 정교 매칭: 핵심 명사 추출 → 인구통계 정렬 → 더 깊은(구체적) 카테고리 우선."""
-    core = target
-    for pre in ("남성", "여성", "남아", "여아", "남자", "여자"):   # 인구통계 접두어 제거
-        if core.startswith(pre):
-            core = core[len(pre):]
-    core = core.strip() or target
-    hits = [(nm, code, depth, cnt) for nm, code, depth, cnt in cands if core in nm]
-    if not hits:
-        return None
+    """경로 기반 개념 중복 매칭. leaf 이름 매칭을 path 매칭보다 강하게 우선(과세분화 방지).
+    인구통계 정렬 + leaf중복·path중복·인기 가중. (이름, 코드, depth) 반환."""
     want = _demo_gender(keyword) or _demo_gender(gender) or _demo_gender(target)
-    if want:                                                   # 인구통계 맞는 후보로 좁힘
-        aligned = [h for h in hits if _demo_gender(h[0]) == want]
-        if aligned:
-            hits = aligned
-    hits.sort(key=lambda x: -x[3])                             # 인기(doc_count) 큰 카테고리 우선
-    return (hits[0][0], hits[0][1], hits[0][2])
+    tc = _cat_concepts(target)
+    if not tc:
+        return None
+    best = None                                  # (score, name, code, depth)
+    for nm, code, depth, cnt, path in cands:
+        pov = len(tc & _cat_concepts(path))      # 경로(조상 포함) 개념 중복
+        if pov == 0:
+            continue
+        cg = _demo_gender(path)                  # 성별 불일치 후보 제외(무성별은 유지)
+        if want and cg and cg != want:
+            continue
+        lov = len(tc & _cat_concepts(nm))        # leaf 이름 매칭(강한 신호)
+        score = lov * 100000 + pov * 1000 + min(cnt, 9999)
+        if best is None or score > best[0]:
+            best = (score, nm, code, depth)
+    return (best[1], best[2], best[3]) if best else None
 
 
 def resolve_filters(ext: dict, agg: dict, keyword: str):
@@ -444,16 +482,16 @@ def apply_post_filters(pool: list, price_band, season: str) -> list:
 @st.cache_resource
 def get_zilliz_client():
     from pymilvus import MilvusClient
-    return MilvusClient(uri=os.environ["ZILLIZ_URI"], token=os.environ["ZILLIZ_TOKEN"])
+    return MilvusClient(uri=st.secrets["ZILLIZ_URI"], token=st.secrets["ZILLIZ_TOKEN"])
 
 
 def get_desc_map(prd_nos: list) -> dict:
-    if not prd_nos or not os.environ.get("ZILLIZ_URI"):
+    if not prd_nos or not st.secrets.get("ZILLIZ_URI"):
         return {}
     try:
         # 확정: 컬렉션 prd_desc_vec_128, 필드 prd_no(VarChar)/desc. 추천 prdNo(int)→str 필터.
         rows = get_zilliz_client().query(
-            collection_name=os.environ["ZILLIZ_COLLECTION"],
+            collection_name=st.secrets["ZILLIZ_COLLECTION"],
             filter=f'prd_no in {[str(n) for n in prd_nos]}',
             output_fields=["prd_no", "desc"], limit=len(prd_nos))
         return {int(r["prd_no"]): (r.get("desc") or "") for r in rows}
@@ -484,11 +522,11 @@ def main():
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
         trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
                              horizontal=True, index=1)
+        use_livecrawl = st.checkbox("Exa 실시간 크롤(livecrawl, 본문 신선도↑·지연↑)", value=False)
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
     use_trends = trend_src == "Daum·Google 뉴스"
     use_exa = trend_src == "Exa AI (매체 본문)"
-    use_litellm = llm_mode == "LiteLLM 프록시"
     use_litellm = llm_mode == "LiteLLM 프록시"
     if not submitted or not keyword:
         st.caption("검색어 입력 후 엔터 또는 검색 버튼을 누르세요.")
@@ -534,7 +572,7 @@ def main():
     if use_trends:
         articles += get_fashion_articles(keyword)
     if use_exa:                                   # Exa AI 본문 기사 병합
-        articles += get_exa_articles(keyword)
+        articles += get_exa_articles(keyword, use_livecrawl)
     if articles:                                  # 제목 기준 경량 중복 제거
         seen_t, uniq = set(), []
         for a in articles:
@@ -601,7 +639,13 @@ def main():
     with st.container(border=True):
         st.markdown(f"### 🛍 쇼핑 · 「{keyword}」 가이드")
         st.caption("AI가 실시간 검색 트렌드로 큐레이션한 추천 가이드예요.")
-        st.write_stream(_typewriter(ext["guide"] or "안내 메시지를 생성하지 못했습니다."))
+        guide_text = ext["guide"] or "안내 메시지를 생성하지 못했습니다."
+        st.markdown(
+            f'<div style="background:linear-gradient(90deg,#eef6ff,#f8fbff);'
+            f'border-left:4px solid #1e88e5;border-radius:8px;padding:14px 16px;margin:6px 0;'
+            f'font-size:16px;line-height:1.7;color:#1a3a5c;font-weight:500">'
+            f'{html.escape(guide_text)}</div>',
+            unsafe_allow_html=True)
         points = [("카테고리", ext["category"])] if ext["category"] else []
         if ext["gender"]:
             points.append(("성별", ext["gender"]))
@@ -759,11 +803,6 @@ def main():
                 else:
                     st.caption("_상세설명 없음_")
 
-
-def _typewriter(s):
-    for ch in s:                       # 가이드는 원래 속도(빠름). 출처 애니메이션만 느림.
-        yield ch
-        time.sleep(0.03)
 
 
 if __name__ == "__main__":
