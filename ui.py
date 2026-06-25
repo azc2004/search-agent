@@ -2,6 +2,7 @@
 import html
 import time
 import urllib.parse
+from datetime import date
 import streamlit as st
 
 from config import HAPIX, SEASONS
@@ -11,6 +12,37 @@ from sources import (get_search_signals, get_naver_trends, get_musinsa_trends,
 from llm import make_guide, curate_products
 from filters import resolve_filters, apply_post_filters
 from zilliz import get_desc_map
+
+
+def _popular_layer():
+    """검색어 미입력 시 실시간 인기검색어 레이어(이미지#2 형태). 2열 순위 목록.
+    클릭 시 _pending_kw 에 적재 → main 최상단에서 위젯 렌더 전 kw_input 으로 소개(reset)."""
+    pops = get_popular_keywords()[:10]
+    today = date.today()
+    st.markdown(
+        f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
+        f'margin:10px 0 10px;border-bottom:1px solid #eee;padding-bottom:8px">'
+        f'<span style="font-weight:700;font-size:15px;color:#222">실시간 인기검색어</span>'
+        f'<span style="color:#999;font-size:12px">{today.month}월 {today.day}일 기준</span></div>',
+        unsafe_allow_html=True)
+    if not pops:
+        st.caption("인기검색어를 불러오지 못했습니다. 검색어를 직접 입력해 주세요.")
+        return
+    half = (len(pops) + 1) // 2
+    left, right = st.columns(2)
+    for col, items, off in ((left, pops[:half], 0), (right, pops[half:half * 2], half)):
+        with col:
+            for i, p in enumerate(items):
+                nc, bc = st.columns([1, 6])
+                with nc:
+                    st.markdown(
+                        f'<div style="color:#e8833a;font-weight:700;font-size:15px;'
+                        f'text-align:center;padding-top:4px">{off + i + 1}</div>',
+                        unsafe_allow_html=True)
+                with bc:
+                    if st.button(p["keyword"], key=f"pop_{off + i}", use_container_width=True):
+                        st.session_state._pending_kw = p["keyword"]
+                        st.rerun()
 
 
 def main():
@@ -24,6 +56,10 @@ def main():
         "[data-testid='stTextInput'] input:focus{border-color:#1e88e5;background:#fff;"
         "box-shadow:0 0 0 3px rgba(30,136,229,.13)}"
         "</style>", unsafe_allow_html=True)
+    # 인기검색어 클릭 보류값 — 위젯 렌더 전에 소개(reset)해야 kw_input 수정 RuntimeError 회피
+    if "_pending_kw" in st.session_state:
+        st.session_state.kw_input = st.session_state.pop("_pending_kw")
+        st.session_state._pop_triggered = True
     # 검색바(폼) — 엔터/버튼(폼 제출) 시만 검색 실행. 입력창은 기본 빈 값.
     if "kw_input" not in st.session_state:
         st.session_state.kw_input = ""
@@ -36,17 +72,6 @@ def main():
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
-    # 하프클럽 인기검색어 — 레이어(popover) 클릭 시 펼쳐짐. 선택 시 키워드 채움 + 즉시 검색
-    with st.popover("💡 인기검색어", use_container_width=True):
-        st.caption("하프클럽 실시간 인기검색어 — 클릭 시 바로 검색")
-        pops = get_popular_keywords()
-        cols = st.columns(3)
-        for i, p in enumerate(pops[:12]):
-            with cols[i % 3]:
-                if st.button(p["keyword"], key=f"pop_{i}", use_container_width=True):
-                    st.session_state.kw_input = p["keyword"]
-                    st.session_state._pop_triggered = True
-                    st.rerun()
     # 트렌드 소스/실시간크롤 — 폼 밖(반응형): Daum·Google 또는 사용안함 시 실시간크롤 옵션 즉시 히든
     trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
                          horizontal=True, index=2)
@@ -55,9 +80,13 @@ def main():
     use_trends = trend_src == "Daum·Google 뉴스"
     use_exa = trend_src == "Exa AI (매체 본문)"
     use_litellm = llm_mode == "LiteLLM 프록시"
-    # 검색 트리거: 폼 제출 OR 칩 클릭
+    # 검색 트리거: 폼 제출 OR 인기검색어 클릭
     run = submitted or st.session_state.pop("_pop_triggered", False)
-    if not run or not keyword:
+    # 검색어가 비어 있으면 실시간 인기검색어 레이어 노출(이미지#2 형태) 후 대기
+    if not keyword:
+        _popular_layer()
+        return
+    if not run:
         st.caption("검색어 입력 후 엔터 또는 검색 버튼을 누르세요.")
         return
 
