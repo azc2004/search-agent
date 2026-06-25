@@ -26,6 +26,22 @@ def get_popular_keywords() -> list:
         return []
 
 
+# ── Halfclub 인기브랜드 ───────────────────────────────────────────────────
+@st.cache_data(ttl=600)
+def get_popular_brands() -> list:
+    """하프클럽 실시간 인기브랜드(range=3 최근). [{brand_name, brand_cd}]. 실패 시 []."""
+    try:
+        r = requests.get(f"{HAPIX}/searches/popularBrand/",
+                         params={"range": 3, "limit": 30, "countryCd": "001",
+                                 "langCd": "001", "siteCd": 1, "deviceCd": "001", "device": "mc"},
+                         timeout=TIMEOUT_API)
+        r.raise_for_status()
+        return [{"brand_name": d["brand_name"], "brand_cd": d["brand_cd"]}
+                for d in r.json().get("data", []) if d.get("brand_name")]
+    except Exception:
+        return []
+
+
 # ── Halfclub 검색 신호 (연관검색어 + aggregations) ────────────────────────
 @st.cache_data(ttl=600)
 def get_search_signals(keyword: str) -> dict:

@@ -7,40 +7,34 @@ import streamlit as st
 from config import HAPIX, SEASONS
 from sources import (get_search_signals, get_naver_trends, get_musinsa_trends,
                      get_fashion_articles, get_exa_articles, build_trend_context,
-                     search_pool, get_popular_keywords)
+                     search_pool, get_popular_keywords, get_popular_brands)
 from llm import make_guide, curate_products
 from filters import resolve_filters, apply_post_filters
 from zilliz import get_desc_map
 
 
-def _popular_buttons():
-    """검색창 하단 실시간 인기검색어 버튼 — 키워드 길이 비례 가로 나열(문자합 기준 줄바꿈).
-    컴팩트 pill 스타일(padding/font 축소, gap 좁힘)."""
-    pops = get_popular_keywords()
-    if not pops:
-        st.caption("인기검색어를 불러오지 못했습니다. 검색어를 직접 입력해 주세요.")
+def _popular_row(items: list[tuple[str, str]], title: str, key_prefix: str):
+    """컴팩트 pill 버튼 라인 — items=[(label, value), ...]. 클릭 시 value를 kw_input으로.
+    키워드 길이 비례 가로 나열(문자합 ~40 기준 줄바꿈). 빈 값이면 노출 생략."""
+    if not items:
         return
     st.markdown(
-        '<style>'
-        '[data-testid="stButton"] button{padding:4px 8px!important;font-size:13px!important;'
-        'line-height:1.2!important;border-radius:14px!important}'
-        '</style>'
-        '<div style="font-weight:700;font-size:13px;color:#666;margin:8px 0 4px">'
-        '실시간 인기검색어 (클릭 시 검색)</div>', unsafe_allow_html=True)
+        f'<div style="font-weight:700;font-size:13px;color:#666;margin:8px 0 4px">{title}</div>',
+        unsafe_allow_html=True)
     rows, cur, cur_len = [], [], 0
-    for p in pops:                                  # 문자합 ~40 기준 행 분할(행당 8~10개)
-        n = len(p["keyword"])
+    for it in items:                                # 문자합 ~40 기준 행 분할
+        n = len(it[0])
         if cur and cur_len + n > 40:
             rows.append(cur); cur, cur_len = [], 0
-        cur.append(p); cur_len += n
+        cur.append(it); cur_len += n
     if cur:
         rows.append(cur)
     for ri, row in enumerate(rows):
-        cols = st.columns([len(p["keyword"]) for p in row], gap="small")  # 비례 폭 + 좁은 갭
-        for ci, p in enumerate(row):
+        cols = st.columns([len(it[0]) for it in row], gap="small")  # 비례 폭 + 좁은 갭
+        for ci, (label, value) in enumerate(row):
             with cols[ci]:
-                if st.button(p["keyword"], key=f"pop_{ri}_{ci}", use_container_width=True):
-                    st.session_state._pending_kw = p["keyword"]
+                if st.button(label, key=f"{key_prefix}_{ri}_{ci}", use_container_width=True):
+                    st.session_state._pending_kw = value
                     st.rerun()
 
 
@@ -54,6 +48,8 @@ def main():
         "border:1px solid #e3e6eb;padding:11px 18px;font-size:15px;height:auto}"
         "[data-testid='stTextInput'] input:focus{border-color:#1e88e5;background:#fff;"
         "box-shadow:0 0 0 3px rgba(30,136,229,.13)}"
+        "[data-testid='stButton'] button{padding:4px 8px!important;font-size:13px!important;"
+        "line-height:1.2!important;border-radius:14px!important}"
         "</style>", unsafe_allow_html=True)
     # 인기검색어 클릭 보류값 — 위젯 렌더 전에 소개(reset)해야 kw_input 수정 RuntimeError 회피
     if "_pending_kw" in st.session_state:
@@ -71,8 +67,14 @@ def main():
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
-    # 인기검색어 버튼 — 항상 활성. 검색 런 중은 Streamlit 스피너가 인터랙션 차단.
-    _popular_buttons()
+    # 인기검색어/인기브랜드 — 탭 분리(첫 탭=인기검색어 기본 노출). 항상 활성.
+    tab_kw, tab_br = st.tabs(["실시간 인기검색어", "실시간 인기브랜드"])
+    with tab_kw:
+        _popular_row([(p["keyword"], p["keyword"]) for p in get_popular_keywords()],
+                     "클릭 시 검색", "pop")
+    with tab_br:
+        _popular_row([(b["brand_name"], b["brand_name"]) for b in get_popular_brands()],
+                     "클릭 시 검색", "pob")
     # 트렌드 소스/실시간크롤 — 폼 밖(반응형): Daum·Google 또는 사용안함 시 실시간크롤 옵션 즉시 히든
     trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
                          horizontal=True, index=2)

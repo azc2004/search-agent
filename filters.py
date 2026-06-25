@@ -55,6 +55,18 @@ def _match_category(target: str, keyword: str, gender: str, cands):
     return (best[1], best[2], best[3]) if best else None
 
 
+def _brand_code(bn: str, buckets) -> str | None:
+    """브랜드명 → brandCd. 정확명 일치 우선, 부분일치는 doc_count 최대. agg 미포함 시 None.
+    부분일치만 있으면 첫 일치(서브브랜드)가 잡혀 메인 브랜드가 누락되는 사례 방지."""
+    for b in buckets:                              # 1) 정확명 일치(예: '베네통' → BL103488)
+        if b.get("name", "").strip() == bn:
+            return b["key"]
+    subs = [b for b in buckets if bn in b.get("name", "")]
+    if subs:                                       # 2) 부분일치 — doc_count 최대(서브브랜드 중 메인 근사)
+        return max(subs, key=lambda b: b.get("doc_count", 0))["key"]
+    return None                                    # 3) agg 미포함 → caller에서 lookup_brand_code 폴백
+
+
 def resolve_filters(ext: dict, agg: dict, keyword: str):
     """추출어 → 필터 해상 + 안내문 트렌드 명사로 키워드 풍부화.
     (filters, info, enriched, residual, trend) 반환."""
@@ -66,10 +78,12 @@ def resolve_filters(ext: dict, agg: dict, keyword: str):
         filters["gndCd"] = GENDER[ext["gender"]]
         info["성별"] = f"{ext['gender']} → gndCd={filters['gndCd']}"
     buckets = agg.get("brand", {}).get("buckets", [])
+    mentioned = ext.get("brands", [])[:3]
+    # 검색어에 명시된 브랜드가 있으면 그것만 적용 — 가이드가 권장한 다른 브랜드는 제외
+    target = [bn for bn in mentioned if bn and bn in keyword] or mentioned
     resolved, codes = [], set()                       # 가이드 브랜드명 → brandCd(다중)
-    for bn in ext.get("brands", [])[:3]:
-        code = next((b["key"] for b in buckets if bn and bn in b.get("name", "")), None) \
-            or lookup_brand_code(bn)                  # agg 미포함 시 브랜드명 검색 폴백
+    for bn in target:
+        code = _brand_code(bn, buckets) or lookup_brand_code(bn)  # 정확명→부분일치→검색 폴백
         if code and code not in codes:                # 코드 중복 제거
             codes.add(code)
             resolved.append((bn, code))
