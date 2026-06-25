@@ -6,7 +6,8 @@ import streamlit as st
 
 from config import HAPIX, SEASONS
 from sources import (get_search_signals, get_naver_trends, get_musinsa_trends,
-                     get_fashion_articles, get_exa_articles, build_trend_context, search_pool)
+                     get_fashion_articles, get_exa_articles, build_trend_context,
+                     search_pool, get_popular_keywords)
 from llm import make_guide, curate_products
 from filters import resolve_filters, apply_post_filters
 from zilliz import get_desc_map
@@ -23,16 +24,29 @@ def main():
         "[data-testid='stTextInput'] input:focus{border-color:#1e88e5;background:#fff;"
         "box-shadow:0 0 0 3px rgba(30,136,229,.13)}"
         "</style>", unsafe_allow_html=True)
-    # 검색바(폼) — 엔터/버튼(폼 제출) 시만 검색 실행
+    # 검색바(폼) — 엔터/버튼(폼 제출) 시만 검색 실행. 입력창은 기본 빈 값.
+    if "kw_input" not in st.session_state:
+        st.session_state.kw_input = ""
     with st.form("search_form", clear_on_submit=False):
         sbar = st.columns([7, 2])
         with sbar[0]:
-            keyword = st.text_input("검색어", "여름 원피스",
+            keyword = st.text_input("검색어", key="kw_input",
                                     label_visibility="collapsed", placeholder="상품·트렌드를 검색하세요")
         with sbar[1]:
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
+    # 하프클럽 인기검색어 — 레이어(popover) 클릭 시 펼쳐짐. 선택 시 키워드 채움 + 즉시 검색
+    with st.popover("💡 인기검색어", use_container_width=True):
+        st.caption("하프클럽 실시간 인기검색어 — 클릭 시 바로 검색")
+        pops = get_popular_keywords()
+        cols = st.columns(3)
+        for i, p in enumerate(pops[:12]):
+            with cols[i % 3]:
+                if st.button(p["keyword"], key=f"pop_{i}", use_container_width=True):
+                    st.session_state.kw_input = p["keyword"]
+                    st.session_state._pop_triggered = True
+                    st.rerun()
     # 트렌드 소스/실시간크롤 — 폼 밖(반응형): Daum·Google 또는 사용안함 시 실시간크롤 옵션 즉시 히든
     trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
                          horizontal=True, index=2)
@@ -41,7 +55,9 @@ def main():
     use_trends = trend_src == "Daum·Google 뉴스"
     use_exa = trend_src == "Exa AI (매체 본문)"
     use_litellm = llm_mode == "LiteLLM 프록시"
-    if not submitted or not keyword:
+    # 검색 트리거: 폼 제출 OR 칩 클릭
+    run = submitted or st.session_state.pop("_pop_triggered", False)
+    if not run or not keyword:
         st.caption("검색어 입력 후 엔터 또는 검색 버튼을 누르세요.")
         return
 

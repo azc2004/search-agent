@@ -10,6 +10,22 @@ from datetime import date, timedelta
 from config import HAPIX, TIMEOUT_API, FASHION_MEDIA
 
 
+# ── Halfclub 인기검색어 ───────────────────────────────────────────────────
+@st.cache_data(ttl=600)
+def get_popular_keywords() -> list:
+    """하프클럽 실시간 인기검색어(range=3 최근). [{keyword, change}]. 실패 시 []."""
+    try:
+        r = requests.get(f"{HAPIX}/searches/popularKeyword/",
+                         params={"range": 3, "limit": 20, "countryCd": "001",
+                                 "langCd": "001", "siteCd": 1, "deviceCd": "001", "device": "mc"},
+                         timeout=TIMEOUT_API)
+        r.raise_for_status()
+        return [{"keyword": d["keyword"], "change": d.get("change", 0)}
+                for d in r.json().get("data", []) if d.get("keyword")]
+    except Exception:
+        return []
+
+
 # ── Halfclub 검색 신호 (연관검색어 + aggregations) ────────────────────────
 @st.cache_data(ttl=600)
 def get_search_signals(keyword: str) -> dict:
