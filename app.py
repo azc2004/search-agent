@@ -512,19 +512,21 @@ def main():
         "[data-testid='stTextInput'] input:focus{border-color:#1e88e5;background:#fff;"
         "box-shadow:0 0 0 3px rgba(30,136,229,.13)}"
         "</style>", unsafe_allow_html=True)
-    # 폼으로 감싸: 체크박스/입력 변경은 재실행 안 함, 엔터/검색 버튼(폼 제출) 시만 실행
+    # 검색바(폼) — 엔터/버튼(폼 제출) 시만 검색 실행
     with st.form("search_form", clear_on_submit=False):
         sbar = st.columns([7, 2])
         with sbar[0]:
             keyword = st.text_input("검색어", "여름 원피스",
-                                    label_visibility="collapsed", placeholder="상품·트렌드를 검색하세요")
+                                    label_visibility="collapsed", placeholder="상품·트렬드를 검색하세요")
         with sbar[1]:
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
-        trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
-                             horizontal=True, index=1)
-        use_livecrawl = st.checkbox("Exa 실시간 크롤(livecrawl, 본문 신선도↑·지연↑)", value=False)
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
+    # 트렌드 소스/실시간크롤 — 폼 밖(반응형): Daum·Google 또는 사용안함 시 실시간크롤 옵션 즉시 히든
+    trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
+                         horizontal=True, index=2)
+    use_livecrawl = trend_src == "Exa AI (매체 본문)" and \
+        st.checkbox("Exa 실시간 크롤(livecrawl, 본문 신선도↑·지연↑)", value=True)
     use_trends = trend_src == "Daum·Google 뉴스"
     use_exa = trend_src == "Exa AI (매체 본문)"
     use_litellm = llm_mode == "LiteLLM 프록시"
