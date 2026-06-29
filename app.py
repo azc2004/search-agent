@@ -1,7 +1,7 @@
 """진입점. streamlit run app.py → UI / python app.py → 파이프라인 셀프체크."""
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-from config import SEASONS
+from config import season_of
 from sources import (get_search_signals, get_naver_trends, get_musinsa_trends,
                      get_fashion_articles, build_trend_context, search_pool)
 from llm import make_guide, curate_products
@@ -23,7 +23,7 @@ def _selfcheck():
     tiers = [(qen, fk)] + ([("", fk)] if f else []) + [(kw0, fk_cat or ())]
     avg = sig["agg"].get("price", {}).get("avg")
     band = (avg * 0.5, avg * 1.5) if avg else None
-    season = next((s for s in SEASONS if s in kw0), None)
+    season = season_of(kw0)
     best, fb = [], []
     for q, ff in tiers:
         pool = search_pool(q, ff)

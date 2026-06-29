@@ -4,7 +4,7 @@ import time
 import urllib.parse
 import streamlit as st
 
-from config import HAPIX, SEASONS
+from config import HAPIX, season_of
 from sources import (get_search_signals, get_naver_trends, get_musinsa_trends,
                      get_fashion_articles, get_exa_articles, build_trend_context,
                      search_pool, get_popular_keywords, get_popular_brands)
@@ -187,11 +187,11 @@ def main():
     filters, info, kw_enriched, kw_residual, trend, brand_locked = resolve_filters(ext, signals["agg"], keyword)
     avg = signals["agg"].get("price", {}).get("avg")
     price_band = (avg * 0.5, avg * 1.5) if avg else None
-    season = next((s for s in SEASONS if s in keyword), None)
+    season = season_of(keyword)
     if price_band:
         info["가격대"] = f"{int(price_band[0]):,}~{int(price_band[1]):,}원 (평균 {int(avg):,}원 기준)"
-    if season:
-        info["시즌"] = f"{season} (상품명 매칭)"
+    src = "키워드" if any(s in keyword for s in ("봄", "여름", "가을", "겨울")) else "현재계절"
+    info["시즌"] = f"{season} ({src}, 상품명 매칭)"
 
     # AI 쇼핑 가이드 카드 (네이버 AI 쇼핑가이드 스타일: 아이콘 헤더 + 서브타이틀 + 불릿 추천포인트)
     with st.container(border=True):

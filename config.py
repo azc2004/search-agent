@@ -1,4 +1,6 @@
 """설정·시크릿·상수·프롬프트. 모든 secret은 .streamlit/secrets.toml(st.secrets)에서 로드."""
+from datetime import date
+
 import streamlit as st
 
 # ── LLM secret/엔드포인트 ────────────────────────────────────────────────
@@ -15,6 +17,15 @@ TIMEOUT_LLM = 20
 # ── 매핑/상수 ────────────────────────────────────────────────────────────
 GENDER = {"여성": "02", "남성": "01", "공용": "03"}
 SEASONS = ["봄", "여름", "가을", "겨울"]
+
+
+def season_of(keyword: str, today=None) -> str:
+    """키워드에 계절명이 있으면 그것, 없으면 현재 월 기준 계절(한국: 3-5봄,6-8여름,9-11가을,12-2겨울)."""
+    for s in SEASONS:
+        if s in keyword:
+            return s
+    m = (today or date.today()).month
+    return SEASONS[(m - 3) % 12 // 3]
 FASHION_MEDIA = ["vogue.co.kr", "elle.co.kr", "wkorea.com", "bazaar.kr",
                  "cosmopolitan.co.kr", "marieclaire.co.kr", "fashionbiz.net"]
 
