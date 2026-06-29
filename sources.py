@@ -238,6 +238,25 @@ def lookup_brand_code(name: str):
         return None
 
 
+def lookup_brand_by_name(name: str):
+    """브랜드명 검색 → 첫 상품의 brandNm이 name과 정확 일치하면 (brandNm, brandCd).
+    짧은/단일 브랜드 검색어(예: '씨')가 agg 상위 버킷에 누락된 경우의 브랜드 특정 폴백.
+    일치하지 않으면 None(카테고리명 등의 오검출 방지용 검증)."""
+    try:
+        r = requests.get(f"{HAPIX}/searches/prdList/",
+                         params={"keyword": name, "device": "pc", "limit": "0,1", "sortSeq": "12"},
+                         timeout=TIMEOUT_API)
+        hits = r.json()["data"]["result"]["hits"]["hits"]
+        if hits:
+            s = hits[0]["_source"]
+            bnm = (s.get("brandNm") or "").strip()
+            if bnm == name:
+                return (bnm, s.get("brandCd"))
+    except Exception:
+        pass
+    return None
+
+
 @st.cache_data(ttl=600)
 def search_pool(keyword: str, filters_key: tuple, limit: int = 80) -> list[dict]:
     params = {"keyword": keyword, "device": "pc", "limit": f"0,{limit}", "sortSeq": "12",

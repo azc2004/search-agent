@@ -184,7 +184,7 @@ def main():
                     unsafe_allow_html=True)
 
     # STEP 2 — 필터 해상 + 키워드 풍부화 + 가격/시즌 post-filter 준비
-    filters, info, kw_enriched, kw_residual, trend = resolve_filters(ext, signals["agg"], keyword)
+    filters, info, kw_enriched, kw_residual, trend, brand_locked = resolve_filters(ext, signals["agg"], keyword)
     avg = signals["agg"].get("price", {}).get("avg")
     price_band = (avg * 0.5, avg * 1.5) if avg else None
     season = next((s for s in SEASONS if s in keyword), None)
@@ -238,6 +238,7 @@ def main():
     fk = tuple(sorted(filters.items()))
     fk_nobrand = tuple((k, v) for k, v in fk if k != "brandCd")
     fk_cat = tuple((k, v) for k, v in fk if k.startswith("dpCtgrNo"))   # 카테고리 필수 필터
+    fk_brand = tuple((k, v) for k, v in fk if k == "brandCd")            # 브랜드 단독
     # 브랜드 필터 우선, post-filter(가격/시즌)를 점진 완화. 카테고리는 모든 티어에서 필수.
     attempts = [(kw_enriched, fk, price_band, season)]
     if kw_residual and kw_residual != kw_enriched:
@@ -245,11 +246,17 @@ def main():
     attempts += [("", fk, price_band, season),
                  (kw_enriched, fk, price_band, None), ("", fk, price_band, None),
                  (kw_enriched, fk, None, season), ("", fk, None, season)]
-    if "brandCd" in filters:                      # 브랜드까지 완화 불가 시 브랜드 제외(카테고리 유지)
-        attempts += [(kw_enriched, fk_nobrand, price_band, season),
-                     ("", fk_nobrand, price_band, season)]
-    # 최종: 카테고리만 필수, 나머지(브랜드/성별/가격/시즌) 전부 완화
-    attempts.append((keyword, fk_cat or (), None, None))
+    if brand_locked:
+        # 키워드가 브랜드를 특정한 경우 — brandCd는 절대 완화 안 함. 카테고리/성별을 점진 drop.
+        fk_nocat = tuple((k, v) for k, v in fk if not k.startswith("dpCtgrNo"))
+        attempts += [("", fk_nocat, None, None), ("", fk_brand, None, None),
+                     (keyword, fk_brand, None, None)]
+    else:
+        if "brandCd" in filters:                      # 브랜드까지 완화 불가 시 브랜드 제외(카테고리 유지)
+            attempts += [(kw_enriched, fk_nobrand, price_band, season),
+                         ("", fk_nobrand, price_band, season)]
+        # 최종: 카테고리만 필수, 나머지(브랜드/성별/가격/시즌) 전부 완화
+        attempts.append((keyword, fk_cat or (), None, None))
 
     def _search_url(q, ff):
         params = [("keyword", q), ("device", "pc"), ("limit", "0,80"), ("sortSeq", "12")] + list(ff)

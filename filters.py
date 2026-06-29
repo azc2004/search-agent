@@ -1,6 +1,6 @@
 """필터·카테고리 해상(순수 로직, requests 없음). 추출어 → 검색 API 필터 + 키워드 풍부화."""
 from config import GENDER, SEASONS, _DEMOG, _CAT_CONCEPTS
-from sources import lookup_brand_code
+from sources import lookup_brand_code, lookup_brand_by_name
 
 
 def _ctgr_candidates(agg):
@@ -67,10 +67,27 @@ def _brand_code(bn: str, buckets) -> str | None:
     return None                                    # 3) agg 미포함 → caller에서 lookup_brand_code 폴백
 
 
+def _brand_from_keyword(keyword: str, buckets) -> tuple[str, str] | None:
+    """키워드 자체가 브랜드를 특정하면 (name, code) 반환. LLM 가이드와 무관하게 사용자 명시 의도 최우선.
+    우선순위: 1) agg 정확명(닥스→닥스) 2) agg 부분문자열(베네통여성→베네통) 3) 상품검색 폴백(씨→씨).
+    '기타' bucket은 제외. 폴백은 첫 상품 brandNm이 keyword와 정확 일치할 때만 채택."""
+    for b in buckets:                              # 1) agg 정확명 일치
+        name = b.get("name", "").strip()
+        if name and name not in ("기타",) and name == keyword:
+            return (name, b["key"])
+    for b in buckets:                              # 2) agg name이 keyword의 부분문자열
+        name = b.get("name", "").strip()
+        if name and name not in ("기타",) and name in keyword:
+            return (name, b["key"])
+    return lookup_brand_by_name(keyword)           # 3) 상품검색 폴백(brandNm 정확 일치 검증)
+
+
 def resolve_filters(ext: dict, agg: dict, keyword: str):
     """추출어 → 필터 해상 + 안내문 트렌드 명사로 키워드 풍부화.
-    (filters, info, enriched, residual, trend) 반환."""
+    (filters, info, enriched, residual, trend, brand_locked) 반환.
+    brand_locked=True면 키워드가 브랜드를 특정한 것 — caller(ui.py)는 brandCd 완화 금지."""
     filters, info, kw_stop = {}, {}, set(GENDER) | {"남", "여"}
+    brand_locked = False
     season = next((s for s in SEASONS if s in keyword), None)   # 시즌 post-filter와 중복 방지
     if season:
         kw_stop.add(season)
@@ -78,19 +95,29 @@ def resolve_filters(ext: dict, agg: dict, keyword: str):
         filters["gndCd"] = GENDER[ext["gender"]]
         info["성별"] = f"{ext['gender']} → gndCd={filters['gndCd']}"
     buckets = agg.get("brand", {}).get("buckets", [])
-    mentioned = ext.get("brands", [])[:3]
-    # 검색어에 명시된 브랜드가 있으면 그것만 적용 — 가이드가 권장한 다른 브랜드는 제외
-    target = [bn for bn in mentioned if bn and bn in keyword] or mentioned
-    resolved, codes = [], set()                       # 가이드 브랜드명 → brandCd(다중)
-    for bn in target:
-        code = _brand_code(bn, buckets) or lookup_brand_code(bn)  # 정확명→부분일치→검색 폴백
-        if code and code not in codes:                # 코드 중복 제거
-            codes.add(code)
-            resolved.append((bn, code))
-            kw_stop.add(bn)
+    # 키워드 자체가 브랜드를 특정하면 그것만 적용 — LLM 가이드 응닡과 무관하게 강제 적용
+    kw_brand = _brand_from_keyword(keyword, buckets)
+    if kw_brand:
+        resolved, codes = [kw_brand], {kw_brand[1]}
+        kw_stop.add(kw_brand[0])
+        brand_locked = True                         # ui.py에서 brandCd 완화 스킵 신호
+    else:
+        mentioned = ext.get("brands", [])[:3]
+        # 검색어에 명시된 브랜드가 있으면 그것만 적용 — 가이드가 권장한 다른 브랜드는 제외
+        target = [bn for bn in mentioned if bn and bn in keyword] or mentioned
+        resolved, codes = [], set()                   # 가이드 브랜드명 → brandCd(다중)
+        for bn in target:
+            code = _brand_code(bn, buckets) or lookup_brand_code(bn)  # 정확명→부분일치→검색 폴백
+            if code and code not in codes:            # 코드 중복 제거
+                codes.add(code)
+                resolved.append((bn, code))
+                kw_stop.add(bn)
     if resolved:
         filters["brandCd"] = ",".join(c for _, c in resolved)
         info["브랜드"] = f"{', '.join(n for n, _ in resolved)} → brandCd={filters['brandCd']}"
+        # 단일 브랜드 특정 시 잠금(키워드 명시 또는 가이드 단일 브랜드).
+        # 다중 브랜드(가이드 추런)는 완화 가능하므로 잠금 제외.
+        brand_locked = brand_locked or len(resolved) == 1
     if ext["category"]:
         m = _match_category(ext["category"], keyword, ext.get("gender", ""), _ctgr_candidates(agg))
         if m:
@@ -105,7 +132,7 @@ def resolve_filters(ext: dict, agg: dict, keyword: str):
     if trend:
         info["트렌드키워드(안내문)"] = ", ".join(trend)
     enriched = " ".join([residual] + trend).strip()
-    return filters, info, enriched, residual, trend
+    return filters, info, enriched, residual, trend, brand_locked
 
 
 def apply_post_filters(pool: list, price_band, season: str) -> list:

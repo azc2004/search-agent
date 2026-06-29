@@ -17,7 +17,7 @@ def _selfcheck():
                               get_fashion_articles(kw0))
     ext = make_guide(kw0, ctx, False)
     assert ext["guide"], ext
-    f, info, qen, _, _ = resolve_filters(ext, sig["agg"], kw0)
+    f, info, qen, _, _, _ = resolve_filters(ext, sig["agg"], kw0)
     fk = tuple(sorted(f.items()))
     fk_cat = tuple((k, v) for k, v in fk if k.startswith("dpCtgrNo"))
     tiers = [(qen, fk)] + ([("", fk)] if f else []) + [(kw0, fk_cat or ())]
