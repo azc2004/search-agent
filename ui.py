@@ -198,12 +198,14 @@ def main():
         st.markdown(f"### 🛍 쇼핑 · 「{keyword}」 가이드")
         st.caption("AI가 실시간 검색 트렌드로 큐레이션한 추천 가이드예요.")
         guide_text = ext["guide"] or "안내 메시지를 생성하지 못했습니다."
-        st.markdown(
-            f'<div style="background:linear-gradient(90deg,#eef6ff,#f8fbff);'
-            f'border-left:4px solid #1e88e5;border-radius:8px;padding:14px 16px;margin:6px 0;'
-            f'font-size:16px;line-height:1.7;color:#1a3a5c;font-weight:500">'
-            f'{html.escape(guide_text)}</div>',
-            unsafe_allow_html=True)
+        _gstyle = ("background:linear-gradient(90deg,#eef6ff,#f8fbff);"
+                   "border-left:4px solid #1e88e5;border-radius:8px;padding:14px 16px;margin:6px 0;"
+                   "font-size:16px;line-height:1.7;color:#1a3a5c;font-weight:500")
+        _gbox = st.empty()
+        for n in range(1, len(guide_text) + 1):
+            _gbox.markdown(f'<div style="{_gstyle}">{html.escape(guide_text[:n])}</div>',
+                           unsafe_allow_html=True)
+            time.sleep(0.015)
         points = [("카테고리", ext["category"])] if ext["category"] else []
         if ext["gender"]:
             points.append(("성별", ext["gender"]))
