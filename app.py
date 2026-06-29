@@ -23,7 +23,7 @@ def _selfcheck():
     tiers = [(qen, fk)] + ([("", fk)] if f else []) + [(kw0, fk_cat or ())]
     avg = sig["agg"].get("price", {}).get("avg")
     band = (avg * 0.5, avg * 1.5) if avg else None
-    season = season_of(kw0)
+    season = season_of(kw0, ext.get("season", ""))
     best, fb = [], []
     for q, ff in tiers:
         pool = search_pool(q, ff)

@@ -39,9 +39,10 @@ def make_guide(keyword: str, context: str, use_litellm: bool) -> dict:
         brands = [b for b in o.get("brand", "").split() if b]
         return {"guide": o.get("guide", ""), "brands": brands,
                 "category": o.get("category", "").strip(), "gender": o.get("gender", "").strip(),
-                "keywords": o.get("keywords", "").strip()}
+                "keywords": o.get("keywords", "").strip(),
+                "season": o.get("season", "").strip()}
     except Exception:
-        return {"guide": "", "brands": [], "category": "", "gender": "", "keywords": ""}
+        return {"guide": "", "brands": [], "category": "", "gender": "", "keywords": "", "season": ""}
 
 
 @st.cache_data(ttl=600)

@@ -19,11 +19,13 @@ GENDER = {"여성": "02", "남성": "01", "공용": "03"}
 SEASONS = ["봄", "여름", "가을", "겨울"]
 
 
-def season_of(keyword: str, today=None) -> str:
-    """키워드에 계절명이 있으면 그것, 없으면 현재 월 기준 계절(한국: 3-5봄,6-8여름,9-11가을,12-2겨울)."""
+def season_of(keyword: str, llm_season: str = "", today=None) -> str:
+    """계절 결정 우선순위: 1) 키워드 명시 2) LLM 판단(역시즌 포함) 3) 현재 월."""
     for s in SEASONS:
         if s in keyword:
             return s
+    if llm_season in SEASONS:
+        return llm_season
     m = (today or date.today()).month
     return SEASONS[(m - 3) % 12 // 3]
 FASHION_MEDIA = ["vogue.co.kr", "elle.co.kr", "wkorea.com", "bazaar.kr",
@@ -56,7 +58,10 @@ SYSTEM_PROMPT = (
     '"category":"핵심 카테고리 명사(예: 원피스) 또는 빈 문자열",'
     '"gender":"여성/남성/공용 중 하나 또는 빈 문자열",'
     '"keywords":"안내문에 언급된 소재/스타일/컬러/실루엣 단일 명사 1~3개 공백 구분(예: 쉬폸 플리츠). '
-    '브랜드명/카테고리명/계절명/연관검색어 전체는 넣지 말 것"}'
+    '브랜드명/카테고리명/계절명/연관검색어 전체는 넣지 말 것",'
+    '"season":"봄/여름/가을/겨울 중 상품이 본질적으로 속하는 계절. '
+    '역시즌 검색(예: 여름에 패딩·기모 검색)은 상품 계절(겨울)로 판단. '
+    '검색어·카테고리·소재로 판단 안 되면 빈 문자열"}'
 )
 
 CURATE_SYS = (
