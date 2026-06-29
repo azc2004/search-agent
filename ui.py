@@ -205,7 +205,7 @@ def main():
         for n in range(1, len(guide_text) + 1):
             _gbox.markdown(f'<div style="{_gstyle}">{html.escape(guide_text[:n])}</div>',
                            unsafe_allow_html=True)
-            time.sleep(0.060)
+            time.sleep(0.040)
         points = [("카테고리", ext["category"])] if ext["category"] else []
         if ext["gender"]:
             points.append(("성별", ext["gender"]))
