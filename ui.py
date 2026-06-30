@@ -38,6 +38,29 @@ def _popular_row(items: list[tuple[str, str]], title: str, key_prefix: str):
                     st.rerun()
 
 
+def _pivot_cb(gk):
+    """가이드 키워드 칩 on_click — _pivot_kw 예약. 캐시된 기본 필터 유지, 상품검색만 재실행."""
+    st.session_state._pivot_kw = gk
+
+
+def _search_url(q, ff):
+    """검색 API URL 조립. q=keyword, ff=필터 튜플."""
+    params = [("keyword", q), ("device", "pc"), ("limit", "0,80"), ("sortSeq", "12")] + list(ff)
+    return f"{HAPIX}/searches/prdList/?" + urllib.parse.urlencode(params)
+
+
+def _highlight_guide(text: str, keywords: list[str]) -> str:
+    """가이드 텍스트의 키워드를 하이라이트 span으로 감싸 HTML 반환."""
+    out = html.escape(text)
+    for gk in keywords:
+        gk_esc = html.escape(gk)
+        out = out.replace(
+            gk_esc,
+            f'<span style="color:#1565c0;font-weight:700;'
+            f'border-bottom:2px solid #1e88e5">{gk_esc}</span>')
+    return out
+
+
 def main():
     st.set_page_config(page_title="검색어 기반 추천 PoC", layout="wide")
     st.title("검색어 기반 LLM 추천 안내")
@@ -55,6 +78,7 @@ def main():
     if "_pending_kw" in st.session_state:
         st.session_state.kw_input = st.session_state.pop("_pending_kw")
         st.session_state._pop_triggered = True
+    pivot_kw = st.session_state.pop("_pivot_kw", None)   # 가이드 키워드 칩 → 상품검색만 재실행
     # 검색바(폼) — 엔터/버튼(폼 제출) 시만 검색 실행. 입력창은 기본 빈 값.
     if "kw_input" not in st.session_state:
         st.session_state.kw_input = ""
@@ -65,8 +89,14 @@ def main():
                                     label_visibility="collapsed", placeholder="상품·트렌드를 검색하세요")
         with sbar[1]:
             submitted = st.form_submit_button("🔍  검색", use_container_width=True, type="primary")
+    # LLM 호출 방식 + 외부 트렌드 수집 — 한 줄 나란히 배치
+    opt_cols = st.columns(2)
+    with opt_cols[0]:
         llm_mode = st.radio("LLM 호출 방식", ["직접 (OpenAI 호환)", "LiteLLM 프록시"],
                             horizontal=True, index=0)
+    with opt_cols[1]:
+        trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
+                             horizontal=True, index=2)
     # 인기검색어/인기브랜드 — 탭 분리(첫 탭=인기검색어 기본 노출). 항상 활성.
     tab_kw, tab_br = st.tabs(["실시간 인기검색어", "실시간 인기브랜드"])
     with tab_kw:
@@ -75,94 +105,99 @@ def main():
     with tab_br:
         _popular_row([(b["brand_name"], b["brand_name"]) for b in get_popular_brands()],
                      "클릭 시 검색", "pob")
-    # 트렌드 소스/실시간크롤 — 폼 밖(반응형): Daum·Google 또는 사용안함 시 실시간크롤 옵션 즉시 히든
-    trend_src = st.radio("외부 패션 트렌드 수집", ["사용 안 함", "Daum·Google 뉴스", "Exa AI (매체 본문)"],
-                         horizontal=True, index=2)
     use_livecrawl = trend_src == "Exa AI (매체 본문)" and \
         st.checkbox("Exa 실시간 크롤(livecrawl, 본문 신선도↑·지연↑)", value=True)
     use_trends = trend_src == "Daum·Google 뉴스"
     use_exa = trend_src == "Exa AI (매체 본문)"
     use_litellm = llm_mode == "LiteLLM 프록시"
     # 검색 트리거: 폼 제출 OR 인기검색어 클릭
-    run = submitted or st.session_state.pop("_pop_triggered", False)
+    run = submitted or st.session_state.pop("_pop_triggered", False) or pivot_kw is not None
     if not run:
         if keyword:
             st.caption("검색 버튼을 누르거나 엔터로 실행하세요.")
         return
 
+    # ── 피벗 모드: 칩 클릭 시 캐시 복원으로 STEP 1/2 스킵, 상품검색만 재실행 ──
+    _cache = st.session_state.get("_ctx_cache")
+    is_pivot = pivot_kw is not None and _cache is not None
+
     # STEP 1 — 트렌드 수집(수요 소스는 조용히) → 패션 출처(매체) 스켈레톤→카운트업→LLM 안내문
-    st.markdown(
-        "<style>"
-        "@keyframes hcsk{0%{background-position:-300px 0}100%{background-position:300px 0}}"
-        ".hc-sk{display:inline-block;height:11px;border-radius:4px;width:62%;vertical-align:middle;"
-        "background:linear-gradient(90deg,#e2e5ea 25%,#eef0f3 50%,#e2e5ea 75%);"
-        "background-size:600px 100%;animation:hcsk 1.1s infinite linear}"
-        "@keyframes hcpulse{0%,100%{opacity:.3;transform:scale(.7)}50%{opacity:1;transform:scale(1.15)}}"
-        ".hc-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#1e88e5;"
-        "margin-right:7px;vertical-align:middle;animation:hcpulse 1s infinite}"
-        "</style>", unsafe_allow_html=True)
-    ph = st.empty()
+    if not is_pivot:
+        st.markdown(
+            "<style>"
+            "@keyframes hcsk{0%{background-position:-300px 0}100%{background-position:300px 0}}"
+            ".hc-sk{display:inline-block;height:11px;border-radius:4px;width:62%;vertical-align:middle;"
+            "background:linear-gradient(90deg,#e2e5ea 25%,#eef0f3 50%,#e2e5ea 75%);"
+            "background-size:600px 100%;animation:hcsk 1.1s infinite linear}"
+            "@keyframes hcpulse{0%,100%{opacity:.3;transform:scale(.7)}50%{opacity:1;transform:scale(1.15)}}"
+            ".hc-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#1e88e5;"
+            "margin-right:7px;vertical-align:middle;animation:hcpulse 1s infinite}"
+            "</style>", unsafe_allow_html=True)
+        ph = st.empty()
 
-    def steps_render(items):
-        rows = []
-        for i, (label, state) in enumerate(items, 1):
-            num = f'<b style="color:#bbb;display:inline-block;width:18px">{i}</b>'
-            if state == "done":
-                mark = '<span style="color:#43a047;font-weight:700;margin-right:6px">✓</span>'
-                body = f'<span style="font-weight:600;color:#222">{html.escape(label)}</span>'
-            elif state == "active":                 # 상태 라인 = 펄스 닷 + 텍스트
-                mark = '<span class="hc-dot"></span>'
-                body = f'<span style="color:#1e88e5;font-weight:600">{html.escape(label)}</span>'
-            else:                                   # 수집 슬롯 = 펄스 닷 + 스켈레톤 바
-                mark = '<span class="hc-dot"></span>'
-                body = '<span class="hc-sk"></span>'
-            rows.append(f'<div style="margin:6px 0;font-size:14px">{num}{mark}{body}</div>')
-        ph.markdown('<div style="background:#f6f7f9;border-radius:8px;padding:12px 14px">'
-                    + "".join(rows) + "</div>", unsafe_allow_html=True)
+        def steps_render(items):
+            rows = []
+            for i, (label, state) in enumerate(items, 1):
+                num = f'<b style="color:#bbb;display:inline-block;width:18px">{i}</b>'
+                if state == "done":
+                    mark = '<span style="color:#43a047;font-weight:700;margin-right:6px">✓</span>'
+                    body = f'<span style="font-weight:600;color:#222">{html.escape(label)}</span>'
+                elif state == "active":                 # 상태 라인 = 펄스 닷 + 텍스트
+                    mark = '<span class="hc-dot"></span>'
+                    body = f'<span style="color:#1e88e5;font-weight:600">{html.escape(label)}</span>'
+                else:                                   # 수집 슬롯 = 펄스 닷 + 스켈레톤 바
+                    mark = '<span class="hc-dot"></span>'
+                    body = '<span class="hc-sk"></span>'
+                rows.append(f'<div style="margin:6px 0;font-size:14px">{num}{mark}{body}</div>')
+            ph.markdown('<div style="background:#f6f7f9;border-radius:8px;padding:12px 14px">'
+                        + "".join(rows) + "</div>", unsafe_allow_html=True)
 
-    steps_render([("패션 트렌드 정보를 수집하고 있어요", "active"),
-                  ("", "running"), ("", "running"), ("", "running")])
-    # 수요 소스(Halfclub/Naver/무신사)는 필터·컨텍스트용으로만 수집 (UI 미표기)
-    signals = get_search_signals(keyword)
-    naver = get_naver_trends()
-    musinsa = get_musinsa_trends()
-    articles = []
-    if use_trends:
-        articles += get_fashion_articles(keyword)
-    if use_exa:                                   # Exa AI 본문 기사 병합
-        articles += get_exa_articles(keyword, use_livecrawl)
-    if articles:                                  # 제목 기준 경량 중복 제거
-        seen_t, uniq = set(), []
-        for a in articles:
-            k = a["title"][:14]
-            if k not in seen_t:
-                seen_t.add(k)
-                uniq.append(a)
-        articles = uniq
-    if articles:
-        batches = [articles[i:i + 3] for i in range(0, len(articles), 3)]
-        items = [("패션 트렌드 정보를 수집하고 있어요", "active")]
-        for batch in batches:                       # 3개씩 누적 노출(히든 없이 유지)
-            start = len(items)
-            for a in batch:
-                items.append((a["source"], "running"))
-            steps_render(items)
-            for j, a in enumerate(batch):           # 천천히 스켈레톤→완료 채움
-                time.sleep(0.3)
-                items[start + j] = (f"{a['source']} — {a['title'][:30]}", "done")
+        steps_render([("패션 트렌드 정보를 수집하고 있어요", "active"),
+                      ("", "running"), ("", "running"), ("", "running")])
+        # 수요 소스(Halfclub/Naver/무신사)는 필터·컨텍스트용으로만 수집 (UI 미표기)
+        signals = get_search_signals(keyword)
+        naver = get_naver_trends()
+        musinsa = get_musinsa_trends()
+        articles = []
+        if use_trends:
+            articles += get_fashion_articles(keyword)
+        if use_exa:                                   # Exa AI 본문 기사 병합
+            articles += get_exa_articles(keyword, use_livecrawl)
+        if articles:                                  # 제목 기준 경량 중복 제거
+            seen_t, uniq = set(), []
+            for a in articles:
+                k = a["title"][:14]
+                if k not in seen_t:
+                    seen_t.add(k)
+                    uniq.append(a)
+            articles = uniq
+        if articles:
+            batches = [articles[i:i + 3] for i in range(0, len(articles), 3)]
+            items = [("패션 트련드 정보를 수집하고 있어요", "active")]
+            for batch in batches:                       # 3개씩 누적 노출(히든 없이 유지)
+                start = len(items)
+                for a in batch:
+                    items.append((a["source"], "running"))
                 steps_render(items)
-        for k in range(len(articles) + 1):          # 건수 카운트업
-            items[0] = (f"패션 트렌드 정보 {k}건을 확인했어요", "done")
+                for j, a in enumerate(batch):           # 천천히 스켈레톤→완료 채움
+                    time.sleep(0.3)
+                    items[start + j] = (f"{a['source']} — {a['title'][:30]}", "done")
+                    steps_render(items)
+            for k in range(len(articles) + 1):          # 건수 카운트업
+                items[0] = (f"패션 트렌드 정보 {k}건을 확인했어요", "done")
+                steps_render(items)
+                time.sleep(0.04)
+            items[0] = ("AI 트렌드 가이드를 작성하고 있어요", "active")
             steps_render(items)
-            time.sleep(0.04)
-        items[0] = ("AI 트렌드 가이드를 작성하고 있어요", "active")
-        steps_render(items)
+        else:
+            with st.spinner("AI 트렌드 가이드를 작성하고 있어요"):
+                pass
+        ctx = build_trend_context(signals, keyword, naver, musinsa, articles)
+        ext = make_guide(keyword, ctx, use_litellm)
+        ph.empty()                                      # 가이드 노출 시점에 수집 UI 히든
     else:
-        with st.spinner("AI 트렌드 가이드를 작성하고 있어요"):
-            pass
-    ctx = build_trend_context(signals, keyword, naver, musinsa, articles)
-    ext = make_guide(keyword, ctx, use_litellm)
-    ph.empty()                                      # 가이드 노출 시점에 수집 UI 히든
+        ext, signals, articles, ctx = (_cache["ext"], _cache["signals"],
+                                       _cache["articles"], _cache["ctx"])
 
     # 출처 표기 — 패션 트렌드 매체 (색 사각 아이콘 + 출처명 링크)
     palette = ["#1e88e5", "#03c75a", "#43a047", "#8e24aa", "#fb8c00",
@@ -183,30 +218,91 @@ def main():
         st.markdown(f'<div style="margin:4px 0 10px"><b>출처</b><br>{chips}</div>',
                     unsafe_allow_html=True)
 
-    # STEP 2 — 필터 해상 + 키워드 풍부화 + 가격/시즌 post-filter 준비
-    filters, info, kw_enriched, kw_residual, trend, brand_locked = resolve_filters(ext, signals["agg"], keyword)
-    avg = signals["agg"].get("price", {}).get("avg")
-    price_band = (avg * 0.5, avg * 1.5) if avg else None
-    season = season_of(keyword, ext.get("season", ""))
-    if price_band:
-        info["가격대"] = f"{int(price_band[0]):,}~{int(price_band[1]):,}원 (평균 {int(avg):,}원 기준)"
-    src = "키워드" if any(s in keyword for s in ("봄", "여름", "가을", "겨울")) \
-        else ("LLM" if ext.get("season") in ("봄", "여름", "가을", "겨울") else "현재계절")
-    info["시즌"] = f"{season} ({src}, 상품명 매칭)"
+    # STEP 2 — 필터 해상 + 키워드 풍부화 + 가격/시즌 post-filter 준비 (피벗 시 캐시 복원)
+    if not is_pivot:
+        filters, info, kw_enriched, kw_residual, trend, brand_locked = resolve_filters(ext, signals["agg"], keyword)
+        avg = signals["agg"].get("price", {}).get("avg")
+        price_band = (avg * 0.5, avg * 1.5) if avg else None
+        season = season_of(keyword, ext.get("season", ""))
+        if price_band:
+            info["가격대"] = f"{int(price_band[0]):,}~{int(price_band[1]):,}원 (평균 {int(avg):,}원 기준)"
+        src = "키워드" if any(s in keyword for s in ("봄", "여름", "가을", "겨울")) \
+            else ("LLM" if ext.get("season") in ("봄", "여름", "가을", "겨울") else "현재계절")
+        info["시즌"] = f"{season} ({src}, 상품명 매칭)"
+        # 캐시 저장 — 칩 클릭 시 STEP 1/2 통째로 스킵
+        st.session_state._ctx_cache = {
+            "ext": ext, "signals": signals, "articles": articles, "ctx": ctx,
+            "keyword": keyword, "filters": dict(filters), "info": dict(info),
+            "season": season, "price_band": price_band, "brand_locked": brand_locked,
+            "use_litellm": use_litellm, "trend": trend,
+        }
+    else:
+        keyword = _cache["keyword"]
+        filters, info = dict(_cache["filters"]), dict(_cache["info"])
+        season, price_band = _cache["season"], _cache["price_band"]
+        brand_locked, trend, use_litellm = _cache["brand_locked"], _cache["trend"], _cache["use_litellm"]
+        kw_enriched = kw_residual = pivot_kw
+        info["필터고정"] = f"🔗 키워드 「{pivot_kw}」 재검색 (기본 필터 유지)"
+
+    # ── 상품 검색 (가이드 카드 이전에 실행 → 칩에 실제 채택 URL 표시 가능) ──
+    fk = tuple(sorted(filters.items()))
+    fk_nobrand = tuple((k, v) for k, v in fk if k != "brandCd")
+    fk_cat = tuple((k, v) for k, v in fk if k.startswith("dpCtgrNo"))
+    fk_brand = tuple((k, v) for k, v in fk if k == "brandCd")
+    attempts = [(kw_enriched, fk, price_band, season)]
+    if kw_residual and kw_residual != kw_enriched:
+        attempts.append((kw_residual, fk, price_band, season))
+    attempts += [("", fk, price_band, season),
+                 (kw_enriched, fk, price_band, None), ("", fk, price_band, None),
+                 (kw_enriched, fk, None, season), ("", fk, None, season)]
+    if brand_locked:
+        fk_nocat = tuple((k, v) for k, v in fk if not k.startswith("dpCtgrNo"))
+        attempts += [("", fk_nocat, None, None), ("", fk_brand, None, None),
+                     (keyword, fk_brand, None, None)]
+    else:
+        if "brandCd" in filters:
+            attempts += [(kw_enriched, fk_nobrand, price_band, season),
+                         ("", fk_nobrand, price_band, season)]
+        attempts.append((keyword, fk_cat or (), None, None))
+
+    products, fallback, adopted, fb_qff, search_error = [], None, None, None, None
+    try:
+        for q, ff, pb, se in attempts:
+            pool = search_pool(q, ff)
+            if fallback is None:
+                fallback, fb_qff = pool, (q, ff)
+            filt = apply_post_filters(pool, pb, se)
+            if len(filt) >= 12:
+                products, adopted = filt, (q, ff)
+                break
+            if len(filt) > len(products):
+                products, adopted = filt, (q, ff)
+        if not products and fallback is not None:
+            products, adopted = fallback, fb_qff
+        products = products[:20]
+    except Exception as e:
+        search_error = e
+    base_url = _search_url(kw_enriched, fk)
+    final_url = _search_url(*adopted) if adopted else ""
 
     # AI 쇼핑 가이드 카드 (네이버 AI 쇼핑가이드 스타일: 아이콘 헤더 + 서브타이틀 + 불릿 추천포인트)
     with st.container(border=True):
         st.markdown(f"### 🛍 쇼핑 · 「{keyword}」 가이드")
         st.caption("AI가 실시간 검색 트렌드로 큐레이션한 추천 가이드예요.")
         guide_text = ext["guide"] or "안내 메시지를 생성하지 못했습니다."
+        gkws = [k for k in (ext.get("keywords") or "").split() if k][:4]
         _gstyle = ("background:linear-gradient(90deg,#eef6ff,#f8fbff);"
                    "border-left:4px solid #1e88e5;border-radius:8px;padding:14px 16px;margin:6px 0;"
                    "font-size:16px;line-height:1.7;color:#1a3a5c;font-weight:500")
         _gbox = st.empty()
-        for n in range(1, len(guide_text) + 1):
-            _gbox.markdown(f'<div style="{_gstyle}">{html.escape(guide_text[:n])}</div>',
+        if not is_pivot:                               # 최초 1회만 타이핑 효과
+            for n in range(1, len(guide_text) + 1):
+                _gbox.markdown(f'<div style="{_gstyle}">{_highlight_guide(guide_text[:n], gkws)}</div>',
+                               unsafe_allow_html=True)
+                time.sleep(0.040)
+        else:
+            _gbox.markdown(f'<div style="{_gstyle}">{_highlight_guide(guide_text, gkws)}</div>',
                            unsafe_allow_html=True)
-            time.sleep(0.040)
         points = [("카테고리", ext["category"])] if ext["category"] else []
         if ext["gender"]:
             points.append(("성별", ext["gender"]))
@@ -220,7 +316,17 @@ def main():
             st.markdown(f"**「{keyword}」 추천 포인트**")
             for label, val in points:
                 st.markdown(f"- **{label}** — {val}")
-        st.caption(f"검색어: `{kw_enriched or '(없음)'}`")
+        # 하이라이트 키워드 필 버튼 — 클릭 시 해당 키워드로 재검색
+        if gkws:
+            cols = st.columns(len(gkws), gap="small")
+            for i, gk in enumerate(gkws):
+                with cols[i]:
+                    st.button(gk, key=f"gkw_{i}", use_container_width=True,
+                              args=(gk,), on_click=_pivot_cb,
+                              type="primary" if (is_pivot and gk == pivot_kw) else "secondary")
+            # 클릭된 키워드의 실제 채택 API URL 표시
+            if is_pivot and final_url:
+                st.caption(f"🔍 **{pivot_kw}** 검색 API:\n`{final_url}`")
 
     with st.expander("참고한 데이터 (필터 코드·출처 기사 포함)"):
         st.markdown("**필터 적용**")
@@ -235,60 +341,17 @@ def main():
                 if link:
                     head = f'{head} [↗]({link})'
                 st.markdown(f"- {head}" + (f"\n  - {body}" if body else ""))
-        url_ph = st.empty()                        # 최종 검색 API URL (검색 후 채움)
+        if final_url:
+            st.markdown(f"**검색 API URL (실제 채택)**\n\n`{final_url}`")
         st.code(ctx, language="text")
 
-    fk = tuple(sorted(filters.items()))
-    fk_nobrand = tuple((k, v) for k, v in fk if k != "brandCd")
-    fk_cat = tuple((k, v) for k, v in fk if k.startswith("dpCtgrNo"))   # 카테고리 필수 필터
-    fk_brand = tuple((k, v) for k, v in fk if k == "brandCd")            # 브랜드 단독
-    # 브랜드 필터 우선, post-filter(가격/시즌)를 점진 완화. 카테고리는 모든 티어에서 필수.
-    attempts = [(kw_enriched, fk, price_band, season)]
-    if kw_residual and kw_residual != kw_enriched:
-        attempts.append((kw_residual, fk, price_band, season))
-    attempts += [("", fk, price_band, season),
-                 (kw_enriched, fk, price_band, None), ("", fk, price_band, None),
-                 (kw_enriched, fk, None, season), ("", fk, None, season)]
-    if brand_locked:
-        # 키워드가 브랜드를 특정한 경우 — brandCd는 절대 완화 안 함. 카테고리/성별을 점진 drop.
-        fk_nocat = tuple((k, v) for k, v in fk if not k.startswith("dpCtgrNo"))
-        attempts += [("", fk_nocat, None, None), ("", fk_brand, None, None),
-                     (keyword, fk_brand, None, None)]
-    else:
-        if "brandCd" in filters:                      # 브랜드까지 완화 불가 시 브랜드 제외(카테고리 유지)
-            attempts += [(kw_enriched, fk_nobrand, price_band, season),
-                         ("", fk_nobrand, price_band, season)]
-        # 최종: 카테고리만 필수, 나머지(브랜드/성별/가격/시즌) 전부 완화
-        attempts.append((keyword, fk_cat or (), None, None))
-
-    def _search_url(q, ff):
-        params = [("keyword", q), ("device", "pc"), ("limit", "0,80"), ("sortSeq", "12")] + list(ff)
-        return f"{HAPIX}/searches/prdList/?" + urllib.parse.urlencode(params)
-
-    products, fallback, adopted, fb_qff = [], None, None, None
-    try:
-        for q, ff, pb, se in attempts:
-            pool = search_pool(q, ff)
-            if fallback is None:
-                fallback, fb_qff = pool, (q, ff)
-            filt = apply_post_filters(pool, pb, se)
-            if len(filt) >= 12:                   # 충분하면 채택 (브랜드 우선)
-                products, adopted = filt, (q, ff)
-                break
-            if len(filt) > len(products):
-                products, adopted = filt, (q, ff)
-        if not products and fallback is not None:
-            products, adopted = fallback, fb_qff
-        products = products[:20]
-    except Exception as e:
-        st.error(f"검색 API 실패: {e}")
+    # 검색 실패/빈 결과 처리 (가이드 카드 이후)
+    if search_error:
+        st.error(f"검색 API 실패: {search_error}")
         return
     if not products:
         st.info("검색결과가 없습니다.")
         return
-    final_url = _search_url(*adopted) if adopted else ""
-    if final_url:
-        url_ph.markdown(f"**검색 API URL**\n\n`{final_url}`")
 
     # STEP 3~5 — Zilliz desc, AI 큐레이션, 카드 노출
     st.subheader("검색 결과")
@@ -298,7 +361,8 @@ def main():
     # AI 큐레이션 — 후보에서 목적에 맞는 상품 선정 + 추천 근거. 픽은 상단 정렬, 20개 모두 노출
     cand_key = tuple((p["prdNo"], p["prdNm"], p["brandNm"], p["selPrc"],
                       desc_map.get(p["prdNo"], "")) for p in products)
-    curation = curate_products(keyword, ext["guide"], cand_key, use_litellm)
+    curate_kw = pivot_kw if is_pivot else keyword
+    curation = curate_products(curate_kw, ext["guide"], cand_key, use_litellm)
     reason_map = {p["prdNo"]: p["reason"] for p in curation["picks"]}
     if curation["picks"]:
         wanted = [p["prdNo"] for p in curation["picks"]]
@@ -370,3 +434,16 @@ def main():
                         unsafe_allow_html=True)
                 else:
                     st.caption("_상세설명 없음_")
+
+    # 검색 결과 API URL — 실제 채택된 URL (표시 상품과 동일 API 호출)
+    with st.expander("검색 결과 API URL (실제 채택)"):
+        st.code(final_url, language="text")
+        if final_url != base_url:
+            st.caption(f"기본 검색 URL (첫 시도):\n`{base_url}`")
+        if season or price_band:
+            notes = []
+            if season:
+                notes.append(f"시즌 post-filter: 상품명에 「{season}」 포함")
+            if price_band:
+                notes.append(f"가격 post-filter: {int(price_band[0]):,}~{int(price_band[1]):,}원")
+            st.caption("⚠ API 응답에서 추가 post-filter 적용 → " + ", ".join(notes))

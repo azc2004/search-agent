@@ -128,7 +128,7 @@ def resolve_filters(ext: dict, agg: dict, keyword: str):
     residual = " ".join(t for t in keyword.split() if t not in kw_stop)
     # 안내문 트렌드 명사(소재/스타일) — 원본·필터 차원 토큰은 배제하고 단일 명사만
     drop = set(keyword.split()) | kw_stop
-    trend = [t for t in ext.get("keywords", "").split() if t and t not in drop and len(t) <= 4]
+    trend = [t for t in ext.get("keywords", "").split() if t and t not in drop]
     if trend:
         info["트렌드키워드(안내문)"] = ", ".join(trend)
     enriched = " ".join([residual] + trend).strip()
