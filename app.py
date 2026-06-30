@@ -17,16 +17,17 @@ def _selfcheck():
                               get_fashion_articles(kw0))
     ext = make_guide(kw0, ctx, False)
     assert ext["guide"], ext
-    f, info, qen, _, _, _ = resolve_filters(ext, sig["agg"], kw0)
+    f, info, _, _, trend, _ = resolve_filters(ext, sig["agg"], kw0)
+    re_kw = " ".join(trend)
     fk = tuple(sorted(f.items()))
     fk_cat = tuple((k, v) for k, v in fk if k.startswith("dpCtgrNo"))
-    tiers = [(qen, fk)] + ([("", fk)] if f else []) + [(kw0, fk_cat or ())]
+    tiers = [(kw0, re_kw, fk), (kw0, "", fk), ("", "", fk), (kw0, "", fk_cat or ())]
     avg = sig["agg"].get("price", {}).get("avg")
     band = (avg * 0.5, avg * 1.5) if avg else None
     season = season_of(kw0, ext.get("season", ""))
     best, fb = [], []
-    for q, ff in tiers:
-        pool = search_pool(q, ff)
+    for q, rq, ff in tiers:
+        pool = search_pool(q, rq, ff)
         fb = fb or pool
         filt = apply_post_filters(pool, band, season)
         if len(filt) > len(best):
@@ -38,7 +39,7 @@ def _selfcheck():
     ck = tuple((p["prdNo"], p["prdNm"], p["brandNm"], p["selPrc"], "") for p in prods)
     cur = curate_products(kw0, ext["guide"], ck, False)
     assert cur["picks"] and cur["top"] in [p["prdNo"] for p in cur["picks"]], cur
-    print(f"OK filters={f} enriched={qen!r} season={season} search={len(prods)} "
+    print(f"OK filters={f} re_kw={re_kw!r} season={season} search={len(prods)} "
           f"cur_picks={len(cur['picks'])} top={cur['top']}")
     print("summary:", cur["summary"][:80])
     print("info:", info)

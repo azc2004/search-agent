@@ -258,9 +258,9 @@ def lookup_brand_by_name(name: str):
 
 
 @st.cache_data(ttl=600)
-def search_pool(keyword: str, filters_key: tuple, limit: int = 80) -> list[dict]:
-    params = {"keyword": keyword, "device": "pc", "limit": f"0,{limit}", "sortSeq": "12",
-              **dict(filters_key)}
+def search_pool(keyword: str, rekeyword: str, filters_key: tuple, limit: int = 80) -> list[dict]:
+    params = {"keyword": keyword, "reKeyword": rekeyword, "device": "pc",
+              "limit": f"0,{limit}", "sortSeq": "12", **dict(filters_key)}
     r = requests.get(f"{HAPIX}/searches/prdList/", params=params, timeout=TIMEOUT_API)
     r.raise_for_status()
     out = []

@@ -2,7 +2,9 @@
 import html
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx, add_script_run_ctx
 
 from config import HAPIX, season_of
 from sources import (get_search_signals, get_naver_trends, get_musinsa_trends,
@@ -39,13 +41,16 @@ def _popular_row(items: list[tuple[str, str]], title: str, key_prefix: str):
 
 
 def _pivot_cb(gk):
-    """가이드 키워드 칩 on_click — _pivot_kw 예약. 캐시된 기본 필터 유지, 상품검색만 재실행."""
-    st.session_state._pivot_kw = gk
+    """가이드 키워드 칩 on_click. 활성 키워드 재클릭 시 해제(→ 전체 병합 풀).
+    캐시된 기본 필터 유지, 상품검색은 캐시 풀에서 slice."""
+    last = st.session_state.get("_last_pivot", "")
+    st.session_state._pivot_kw = "" if gk == last else gk      # 토글: 같은 키워드 재클릭 → 해제
 
 
-def _search_url(q, ff):
-    """검색 API URL 조립. q=keyword, ff=필터 튜플."""
-    params = [("keyword", q), ("device", "pc"), ("limit", "0,80"), ("sortSeq", "12")] + list(ff)
+def _search_url(q, rq, ff):
+    """검색 API URL 조립. q=keyword, rq=reKeyword, ff=필터 튜플."""
+    params = [("keyword", q), ("reKeyword", rq), ("device", "pc"), ("limit", "0,80"),
+              ("sortSeq", "12")] + list(ff)
     return f"{HAPIX}/searches/prdList/?" + urllib.parse.urlencode(params)
 
 
@@ -79,6 +84,7 @@ def main():
         st.session_state.kw_input = st.session_state.pop("_pending_kw")
         st.session_state._pop_triggered = True
     pivot_kw = st.session_state.pop("_pivot_kw", None)   # 가이드 키워드 칩 → 상품검색만 재실행
+    st.session_state._last_pivot = pivot_kw or ""        # 토글 해제 감지 (다음 rerun의 _pivot_cb가 읽음)
     # 검색바(폼) — 엔터/버튼(폼 제출) 시만 검색 실행. 입력창은 기본 빈 값.
     if "kw_input" not in st.session_state:
         st.session_state.kw_input = ""
@@ -220,7 +226,7 @@ def main():
 
     # STEP 2 — 필터 해상 + 키워드 풍부화 + 가격/시즌 post-filter 준비 (피벗 시 캐시 복원)
     if not is_pivot:
-        filters, info, kw_enriched, kw_residual, trend, brand_locked = resolve_filters(ext, signals["agg"], keyword)
+        filters, info, _, _, trend, brand_locked = resolve_filters(ext, signals["agg"], keyword)
         avg = signals["agg"].get("price", {}).get("avg")
         price_band = (avg * 0.5, avg * 1.5) if avg else None
         season = season_of(keyword, ext.get("season", ""))
@@ -241,49 +247,56 @@ def main():
         filters, info = dict(_cache["filters"]), dict(_cache["info"])
         season, price_band = _cache["season"], _cache["price_band"]
         brand_locked, trend, use_litellm = _cache["brand_locked"], _cache["trend"], _cache["use_litellm"]
-        kw_enriched = kw_residual = pivot_kw
-        info["필터고정"] = f"🔗 키워드 「{pivot_kw}」 재검색 (기본 필터 유지)"
+        if pivot_kw:                                  # 개별 키워드 칩 — 전체(="")는 메시지 생략
+            info["필터고정"] = f"🔗 키워드 「{pivot_kw}」 보기 (기본 필터 유지, 캐시 풀 슬라이스)"
 
-    # ── 상품 검색 (가이드 카드 이전에 실행 → 칩에 실제 채택 URL 표시 가능) ──
+    # ── 상품 검색: 가이드 추출 키워드별 개별 검색 → 라운드로빈 병합 (칩 클릭 시 캐시 slice) ──
     fk = tuple(sorted(filters.items()))
     fk_nobrand = tuple((k, v) for k, v in fk if k != "brandCd")
-    fk_cat = tuple((k, v) for k, v in fk if k.startswith("dpCtgrNo"))
-    fk_brand = tuple((k, v) for k, v in fk if k == "brandCd")
-    attempts = [(kw_enriched, fk, price_band, season)]
-    if kw_residual and kw_residual != kw_enriched:
-        attempts.append((kw_residual, fk, price_band, season))
-    attempts += [("", fk, price_band, season),
-                 (kw_enriched, fk, price_band, None), ("", fk, price_band, None),
-                 (kw_enriched, fk, None, season), ("", fk, None, season)]
-    if brand_locked:
-        fk_nocat = tuple((k, v) for k, v in fk if not k.startswith("dpCtgrNo"))
-        attempts += [("", fk_nocat, None, None), ("", fk_brand, None, None),
-                     (keyword, fk_brand, None, None)]
-    else:
-        if "brandCd" in filters:
-            attempts += [(kw_enriched, fk_nobrand, price_band, season),
-                         ("", fk_nobrand, price_band, season)]
-        attempts.append((keyword, fk_cat or (), None, None))
+    search_error = None
+    if not is_pivot:
+        gkws_all = [k for k in (ext.get("keywords") or "").split() if k][:4]
+        search_kws = list(dict.fromkeys([keyword] + gkws_all))   # 원본+추출, 순서 유지 중복제거
 
-    products, fallback, adopted, fb_qff, search_error = [], None, None, None, None
-    try:
-        for q, ff, pb, se in attempts:
-            pool = search_pool(q, ff)
-            if fallback is None:
-                fallback, fb_qff = pool, (q, ff)
-            filt = apply_post_filters(pool, pb, se)
-            if len(filt) >= 12:
-                products, adopted = filt, (q, ff)
-                break
-            if len(filt) > len(products):
-                products, adopted = filt, (q, ff)
-        if not products and fallback is not None:
-            products, adopted = fallback, fb_qff
-        products = products[:20]
-    except Exception as e:
-        search_error = e
-    base_url = _search_url(kw_enriched, fk)
-    final_url = _search_url(*adopted) if adopted else ""
+        def _pool_for(kw):
+            add_script_run_ctx(ctx=main_ctx)             # 워커에 메인 ctx 전파 (st.cache_data 정상 동작)
+            pool = search_pool(kw, "", fk)
+            filt = apply_post_filters(pool, price_band, season)
+            if len(filt) < 6:                            # post-filter 가혹 → 원본 사용
+                filt = pool
+            if len(filt) < 6 and "brandCd" in filters:   # 여전히 부족 → 브랜드 완화 1회
+                filt = search_pool(kw, "", fk_nobrand)
+            return filt
+
+        try:
+            main_ctx = get_script_run_ctx()              # 메인 스레드 ctx (워커에 전파용)
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                results = list(ex.map(_pool_for, search_kws))
+            pools = dict(zip(search_kws, results))
+            merged, seen = [], set()                     # 라운드로빈 병합 + prdNo dedup
+            for i in range(max((len(p) for p in pools.values()), default=0)):
+                for kw in search_kws:
+                    if i < len(pools[kw]) and pools[kw][i]["prdNo"] not in seen:
+                        seen.add(pools[kw][i]["prdNo"])
+                        merged.append(pools[kw][i])
+                    if len(merged) >= 40:
+                        break
+                if len(merged) >= 40:
+                    break
+            st.session_state._ctx_cache["pools"] = pools
+            st.session_state._ctx_cache["merged"] = merged
+        except Exception as e:
+            search_error = e
+            pools, merged = {}, []
+    else:
+        pools = _cache.get("pools", {})
+        merged = _cache.get("merged", [])
+
+    # 표시: 칩 선택 시 해당 키워드 풀, otherwise 병합. 항상 20개.
+    display_kw = pivot_kw if (is_pivot and pivot_kw in pools) else None
+    products = (pools[display_kw] if display_kw else merged)[:20]
+    base_url = _search_url(keyword, "", fk)
+    final_url = _search_url(display_kw or keyword, "", fk) if products else ""
 
     # AI 쇼핑 가이드 카드 (네이버 AI 쇼핑가이드 스타일: 아이콘 헤더 + 서브타이틀 + 불릿 추천포인트)
     with st.container(border=True):
@@ -316,17 +329,18 @@ def main():
             st.markdown(f"**「{keyword}」 추천 포인트**")
             for label, val in points:
                 st.markdown(f"- **{label}** — {val}")
-        # 하이라이트 키워드 필 버튼 — 클릭 시 해당 키워드로 재검색
+        # 하이라이트 키워드 칩 — 개별 키워드만. 클릭 시 캐시 풀에서 slice, 재클릭 시 해제(전체 병합)
         if gkws:
+            active_kw = pivot_kw if (is_pivot and pivot_kw) else None
             cols = st.columns(len(gkws), gap="small")
             for i, gk in enumerate(gkws):
                 with cols[i]:
                     st.button(gk, key=f"gkw_{i}", use_container_width=True,
                               args=(gk,), on_click=_pivot_cb,
-                              type="primary" if (is_pivot and gk == pivot_kw) else "secondary")
-            # 클릭된 키워드의 실제 채택 API URL 표시
-            if is_pivot and final_url:
-                st.caption(f"🔍 **{pivot_kw}** 검색 API:\n`{final_url}`")
+                              type="primary" if gk == active_kw else "secondary")
+            if final_url:
+                label_kw = display_kw or "전체(병합)"
+                st.caption(f"🔍 **{label_kw}** 검색 API:\n`{final_url}`")
 
     with st.expander("참고한 데이터 (필터 코드·출처 기사 포함)"):
         st.markdown("**필터 적용**")
@@ -361,7 +375,7 @@ def main():
     # AI 큐레이션 — 후보에서 목적에 맞는 상품 선정 + 추천 근거. 픽은 상단 정렬, 20개 모두 노출
     cand_key = tuple((p["prdNo"], p["prdNm"], p["brandNm"], p["selPrc"],
                       desc_map.get(p["prdNo"], "")) for p in products)
-    curate_kw = pivot_kw if is_pivot else keyword
+    curate_kw = pivot_kw if (is_pivot and pivot_kw) else keyword  # 전체(="")면 원본 키워드
     curation = curate_products(curate_kw, ext["guide"], cand_key, use_litellm)
     reason_map = {p["prdNo"]: p["reason"] for p in curation["picks"]}
     if curation["picks"]:
