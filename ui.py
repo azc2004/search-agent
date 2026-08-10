@@ -300,8 +300,8 @@ def main():
     # 표시: 칩 선택 시 해당 키워드 풀, otherwise 병합. 항상 20개.
     display_kw = pivot_kw if (is_pivot and pivot_kw in pools) else None
     products = (pools[display_kw] if display_kw else merged)[:20]
-    base_url = _search_url(keyword, "", fk)
-    final_url = _search_url(display_kw or keyword, "", fk) if products else ""
+    # 실제 채택 URL — 칩 선택 시 그 키워드 1개, 병합 뷰면 병합에 기여한 키워드 전체(정확 대표)
+    final_urls = [t for t in kw_urls if t[0] == display_kw] if display_kw else kw_urls
 
     # AI 쇼핑 가이드 카드 (네이버 AI 쇼핑가이드 스타일: 아이콘 헤더 + 서브타이틀 + 불릿 추천포인트)
     with st.container(border=True):
@@ -343,9 +343,13 @@ def main():
                     st.button(gk, key=f"gkw_{i}", use_container_width=True,
                               args=(gk,), on_click=_pivot_cb,
                               type="primary" if gk == active_kw else "secondary")
-            if final_url:
+            if final_urls:
                 label_kw = display_kw or "전체(병합)"
-                st.caption(f"🔍 **{label_kw}** 검색 API:\n`{final_url}`")
+                if len(final_urls) == 1:
+                    st.caption(f"🔍 **{label_kw}** 검색 API:\n`{final_urls[0][1]}`")
+                else:
+                    st.caption(f"🔍 **{label_kw}** 검색 API ({len(final_urls)}개 키워드 병합, "
+                               "URL 전체는 하단 「참고한 데이터」 참고)")
 
     with st.expander("참고한 데이터 (필터 코드·출처 기사 포함)"):
         st.markdown("**필터 적용**")
@@ -360,12 +364,13 @@ def main():
                 if link:
                     head = f'{head} [↗]({link})'
                 st.markdown(f"- {head}" + (f"\n  - {body}" if body else ""))
-        if final_url:
-            st.markdown(f"**검색 API URL (실제 채택)**\n\n`{final_url}`")
-        if kw_urls:
-            st.markdown("**키워드별 개별 검색 API URL (병합 전, 전체)**")
-            for kw, u in kw_urls:
-                st.markdown(f"- `{kw}` → `{u}`")
+        if final_urls:
+            if len(final_urls) == 1:
+                st.markdown(f"**검색 API URL (실제 채택)**\n\n`{final_urls[0][1]}`")
+            else:
+                st.markdown(f"**검색 API URL (실제 채택 — {len(final_urls)}개 키워드 병합)**")
+                for kw, u in final_urls:
+                    st.markdown(f"- `{kw}` → `{u}`")
         st.code(ctx, language="text")
 
     # 검색 실패/빈 결과 처리 (가이드 카드 이후)
@@ -460,9 +465,12 @@ def main():
 
     # 검색 결과 API URL — 실제 채택된 URL (표시 상품과 동일 API 호출)
     with st.expander("검색 결과 API URL (실제 채택)"):
-        st.code(final_url, language="text")
-        if final_url != base_url:
-            st.caption(f"기본 검색 URL (첫 시도):\n`{base_url}`")
+        for kw, u in final_urls:
+            st.code(u, language="text")
+        if "brandCd" in filters:
+            relaxed = [kw for kw, u in final_urls if "brandCd=" not in u]
+            if relaxed:
+                st.caption(f"⚠ 결과 부족으로 브랜드 필터 완화 적용: {', '.join(relaxed)}")
         if season or price_band:
             notes = []
             if season:
