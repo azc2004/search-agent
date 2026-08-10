@@ -262,17 +262,20 @@ def main():
             add_script_run_ctx(ctx=main_ctx)             # 워커에 메인 ctx 전파 (st.cache_data 정상 동작)
             pool = search_pool(kw, "", fk)
             filt = apply_post_filters(pool, price_band, season)
+            used_fk = fk
             if len(filt) < 6:                            # post-filter 가혹 → 원본 사용
                 filt = pool
             if len(filt) < 6 and "brandCd" in filters:   # 여전히 부족 → 브랜드 완화 1회
                 filt = search_pool(kw, "", fk_nobrand)
-            return filt
+                used_fk = fk_nobrand
+            return filt, used_fk
 
         try:
             main_ctx = get_script_run_ctx()              # 메인 스레드 ctx (워커에 전파용)
             with ThreadPoolExecutor(max_workers=4) as ex:
                 results = list(ex.map(_pool_for, search_kws))
-            pools = dict(zip(search_kws, results))
+            pools = dict(zip(search_kws, (r[0] for r in results)))
+            kw_urls = [_search_url(kw, "", used_fk) for kw, (_, used_fk) in zip(search_kws, results)]
             merged, seen = [], set()                     # 라운드로빈 병합 + prdNo dedup
             for i in range(max((len(p) for p in pools.values()), default=0)):
                 for kw in search_kws:
@@ -285,12 +288,14 @@ def main():
                     break
             st.session_state._ctx_cache["pools"] = pools
             st.session_state._ctx_cache["merged"] = merged
+            st.session_state._ctx_cache["kw_urls"] = list(zip(search_kws, kw_urls))
         except Exception as e:
             search_error = e
             pools, merged = {}, []
     else:
         pools = _cache.get("pools", {})
         merged = _cache.get("merged", [])
+    kw_urls = _cache.get("kw_urls", []) if is_pivot else st.session_state._ctx_cache.get("kw_urls", [])
 
     # 표시: 칩 선택 시 해당 키워드 풀, otherwise 병합. 항상 20개.
     display_kw = pivot_kw if (is_pivot and pivot_kw in pools) else None
@@ -357,6 +362,10 @@ def main():
                 st.markdown(f"- {head}" + (f"\n  - {body}" if body else ""))
         if final_url:
             st.markdown(f"**검색 API URL (실제 채택)**\n\n`{final_url}`")
+        if kw_urls:
+            st.markdown("**키워드별 개별 검색 API URL (병합 전, 전체)**")
+            for kw, u in kw_urls:
+                st.markdown(f"- `{kw}` → `{u}`")
         st.code(ctx, language="text")
 
     # 검색 실패/빈 결과 처리 (가이드 카드 이후)
